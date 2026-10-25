@@ -1,12 +1,10 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProjectRequest(BaseModel):
-    """Requirements submitted by the user."""
-
     project_name: str = Field(min_length=3, max_length=100)
     description: str = Field(min_length=10, max_length=5000)
     language: str = Field(min_length=1)
@@ -15,8 +13,6 @@ class ProjectRequest(BaseModel):
 
 
 class ArchitecturePlan(BaseModel):
-    """Structured design produced by the Architecture Agent."""
-
     project_name: str
     summary: str
     components: list[str] = Field(min_length=1)
@@ -27,8 +23,6 @@ class ArchitecturePlan(BaseModel):
 
 
 class TestResult(BaseModel):
-    """Structured results returned by the testing component."""
-
     passed: int = Field(default=0, ge=0)
     failed: int = Field(default=0, ge=0)
     summary: str = ""
@@ -36,7 +30,8 @@ class TestResult(BaseModel):
 
 
 class ProjectState(BaseModel):
-    """Shared project information used throughout the workflow."""
+    # Validate field values whenever an attribute is reassigned.
+    model_config = ConfigDict(validate_assignment=True)
 
     task_id: str
     request: ProjectRequest
@@ -55,6 +50,5 @@ class ProjectState(BaseModel):
     code_files: list[str] = Field(default_factory=list)
     test_result: TestResult | None = None
     errors: list[str] = Field(default_factory=list)
-
     iteration: int = Field(default=0, ge=0, le=10)
     final_report: str | None = None

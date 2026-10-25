@@ -1,11 +1,9 @@
-
 import os
 
 from dotenv import load_dotenv
 from crewai import Agent, Crew, LLM, Process, Task
 
 from src.models import ArchitecturePlan, ProjectRequest
-
 
 load_dotenv(override=True)
 
@@ -31,8 +29,7 @@ def create_architecture_agent() -> Agent:
         backstory=(
             "You are a pragmatic software architect. "
             "You design small, maintainable applications. "
-            "Be concise. Never claim that code was executed or tested "
-            "unless that actually happened."
+            "Never claim that code was executed or tested unless it was."
         ),
         llm=llm,
         verbose=True,
@@ -56,18 +53,16 @@ def generate_architecture(
             "Acceptance criteria: {acceptance_criteria}\n\n"
             "Output requirements:\n"
             "- Summary: maximum 80 words.\n"
-            "- Components: exactly 3 to 5 short entries.\n"
-            "- Proposed files: exactly 4 to 6 paths.\n"
-            "- Implementation steps: exactly 4 short steps.\n"
-            "- Acceptance criteria: exactly 3 concise criteria.\n"
-            "- Risks: at most 3 concise entries.\n"
-            "- Do not write code or lengthy explanations.\n"
-            "- Return only data matching the required schema."
+            "- Components: 3 to 5 entries.\n"
+            "- Proposed files: 4 to 6 paths.\n"
+            "- Implementation steps: exactly 4 steps.\n"
+            "- Acceptance criteria: exactly 3 criteria.\n"
+            "- Risks: at most 3 entries.\n"
+            "- Return concise data matching the required schema."
         ),
         expected_output=(
-            "One concise ArchitecturePlan containing the project name, "
-            "summary, components, proposed files, implementation steps, "
-            "acceptance criteria and risks."
+            "A structured ArchitecturePlan with project details, "
+            "components, files, steps, acceptance criteria and risks."
         ),
         agent=architect,
         output_pydantic=ArchitecturePlan,
@@ -88,7 +83,7 @@ def generate_architecture(
             "features": ", ".join(request.features),
             "acceptance_criteria": (
                 "; ".join(request.acceptance_criteria)
-                or "Define three suitable criteria."
+                or "Define suitable criteria."
             ),
         }
     )
@@ -98,7 +93,7 @@ def generate_architecture(
     if plan is None:
         raise RuntimeError(
             "Architecture generation did not produce a valid "
-            "ArchitecturePlan. Check the preceding CrewAI errors."
+            "ArchitecturePlan."
         )
 
     return plan
