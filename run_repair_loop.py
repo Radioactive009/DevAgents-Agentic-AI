@@ -1,6 +1,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 from src.blackboard import Blackboard
 from src.debugging_agent import diagnose_failure
@@ -83,31 +84,60 @@ def create_demo_workflow():
     return blackboard, workspace
 
 
+def _print_attempt_history(attempts: list[dict[str, Any]]) -> None:
+    """Print every repair attempt, including incomplete attempts."""
+    print("\n=== REPAIR ATTEMPT HISTORY ===")
+    print(json.dumps(attempts, indent=2, default=str))
+
+
 def main():
     blackboard, workspace = create_demo_workflow()
-    attempts = []
+    attempts: list[dict[str, Any]] = []
+    current_attempt = None
 
     try:
         print("=== INITIAL TEST RUN ===")
+
         result = run_project_tests(workspace)
-        state = blackboard.record_test_result(result)
+        blackboard.record_test_result(result)
+
         print(result.model_dump_json(indent=2))
 
         if result.failed == 0:
             print("\nAll tests passed. No repair was needed.")
+
         else:
-            for attempt_number in range(1, MAX_REPAIR_ATTEMPTS + 1):
+            for attempt_number in range(
+                1,
+                MAX_REPAIR_ATTEMPTS + 1,
+            ):
                 state = blackboard.get_state()
 
-                if state.test_result is None or state.test_result.failed == 0:
+                if (
+                    state.test_result is None
+                    or state.test_result.failed == 0
+                ):
                     break
+
+                # Create the record BEFORE starting the attempt.
+                # If a later step fails, the attempt is still recorded.
+                current_attempt = {
+                    "attempt": attempt_number,
+                    "stage": "diagnosis",
+                    "status": "in_progress",
+                    "patch": None,
+                    "application": None,
+                    "test_result": None,
+                    "error": None,
+                }
+                attempts.append(current_attempt)
 
                 print(
                     f"\n=== REPAIR ATTEMPT "
                     f"{attempt_number}/{MAX_REPAIR_ATTEMPTS} ==="
                 )
 
-                # Step 1: Diagnose the current test failures.
+                # Step 1: Diagnose current test failures.
                 report = diagnose_failure(
                     test_result=state.test_result,
                     code_files=state.code_files,
@@ -122,6 +152,9 @@ def main():
 
                 blackboard.record_debug_report(report)
 
+                current_attempt["debug_report"] = report.model_dump()
+                current_attempt["stage"] = "repair_proposal"
+
                 print("\nDebug report:")
                 print(report.model_dump_json(indent=2))
 
@@ -132,45 +165,59 @@ def main():
                     allowed_files=state.code_files,
                 )
 
+                current_attempt["patch"] = patch.model_dump()
+                current_attempt["stage"] = "patch_validation"
+
                 print("\nProposed patch:")
                 print(patch.model_dump_json(indent=2))
 
-                # Step 3: Validate again immediately before applying.
+                # Step 3: Validate immediately before application.
                 validate_patch(
                     patch=patch,
                     workspace=workspace,
                     allowed_files=state.code_files,
                 )
 
-                # Step 4: Apply the patch and preserve a backup.
+                current_attempt["stage"] = "patch_application"
+
+                # Step 4: Apply patch and preserve a backup.
                 application_result = apply_patch(
                     patch=patch,
                     workspace=workspace,
                     allowed_files=state.code_files,
                 )
 
-                attempt_record = {
-                    "attempt": attempt_number,
-                    "patch": patch.model_dump(),
-                    "application": application_result,
-                }
+                current_attempt["application"] = application_result
+                current_attempt["stage"] = "retesting"
 
-                # Step 5: Retest the generated project.
+                # Step 5: Rerun tests against the patched project.
                 print("\nRerunning project tests...")
+
                 result = run_project_tests(workspace)
                 blackboard.record_test_result(result)
 
-                attempt_record["test_result"] = result.model_dump()
-                attempts.append(attempt_record)
+                current_attempt["test_result"] = result.model_dump()
 
                 print("\nTest result after repair:")
                 print(result.model_dump_json(indent=2))
 
                 if result.failed == 0:
+                    current_attempt["status"] = "succeeded"
+                    current_attempt["stage"] = "completed"
+
                     print("\nRepair succeeded: all tests now pass.")
                     break
 
-                print("\nTests still failing; another attempt may be needed.")
+                current_attempt["status"] = "unsuccessful"
+                current_attempt["stage"] = "retesting"
+
+                print(
+                    "\nTests still failing; another attempt "
+                    "may be needed."
+                )
+
+                # The next attempt will diagnose the latest result.
+                current_attempt = None
 
             else:
                 print(
@@ -180,31 +227,48 @@ def main():
 
         final_state = blackboard.get_state()
 
-        print("\n=== REPAIR ATTEMPT HISTORY ===")
-        print(json.dumps(attempts, indent=2))
+        _print_attempt_history(attempts)
 
         print("\n=== FINAL BLACKBOARD STATE ===")
         print(final_state.model_dump_json(indent=2))
 
-        if final_state.test_result and final_state.test_result.failed > 0:
+        if (
+            final_state.test_result
+            and final_state.test_result.failed > 0
+        ):
             print("\nFinal outcome: unresolved test failures.")
+
         elif final_state.test_result:
             print("\nFinal outcome: all tests passed.")
 
     except Exception as error:
-        blackboard.record_error(
-            f"{type(error).__name__}: {error}"
-        )
+        error_message = f"{type(error).__name__}: {error}"
+
+        # Keep the failed attempt in the history.
+        if current_attempt is not None:
+            current_attempt["status"] = "failed"
+            current_attempt["error"] = error_message
+
+        # Blackboard records the error and transitions to failed.
+        try:
+            blackboard.record_error(error_message)
+        except Exception as state_error:
+            print(
+                "Warning: could not record the error in Blackboard:",
+                f"{type(state_error).__name__}: {state_error}",
+            )
 
         print("\nRepair workflow stopped.")
-        print("Error:", f"{type(error).__name__}: {error}")
-        print("\nCurrent Blackboard state:")
+        print("Error:", error_message)
+
+        _print_attempt_history(attempts)
+
+        print("\n=== FINAL BLACKBOARD STATE ===")
         print(blackboard.get_state().model_dump_json(indent=2))
+
+        # Preserve the original exception for debugging.
         raise
 
 
 if __name__ == "__main__":
     main()
-
-
-
