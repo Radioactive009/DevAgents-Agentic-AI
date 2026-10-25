@@ -66,6 +66,32 @@ class TestBlackboard(unittest.TestCase):
         self.assertIsNone(state.architecture_plan)
         self.assertEqual(state.errors, [])
 
+
+    def test_record_code_files(self):
+        self.board.update_architecture(make_plan())
+
+        state = self.board.record_code_files(
+            ["main.py", "tests/test_main.py"]
+        )
+
+        self.assertEqual(
+            state.code_files,
+            ["main.py", "tests/test_main.py"],
+        )
+
+    def test_record_code_files_rejects_duplicates(self):
+        self.board.update_architecture(make_plan())
+
+        with self.assertRaises(ValueError):
+            self.board.record_code_files(
+                ["main.py", "main.py"]
+            )
+
+    def test_record_code_files_requires_coding_status(self):
+        with self.assertRaises(ValueError):
+            self.board.record_code_files(["main.py"])
+
+
     def test_store_architecture_plan(self):
         state = self.board.update_architecture(make_plan())
 

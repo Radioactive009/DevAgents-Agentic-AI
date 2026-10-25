@@ -103,14 +103,14 @@ def generate_code(
     import os
     from dotenv import load_dotenv
 
-    load_dotenv()
+    load_dotenv(override=True)
 
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is missing. Check your .env file.")
 
     llm = LLM(
-        model="groq/openai/gpt-oss-120b",
+        model="groq/qwen/qwen3.8-27b",
         api_key=api_key,
         temperature=0.1,
         max_tokens=3000,
