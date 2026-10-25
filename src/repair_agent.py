@@ -67,7 +67,7 @@ def propose_repair(
             "None of the allowed source files could be read."
         )
 
-    load_dotenv()
+    load_dotenv(override=True)
     api_key = os.getenv("GROQ_API_KEY")
 
     if not api_key:
@@ -76,7 +76,7 @@ def propose_repair(
         )
 
     llm = LLM(
-        model="groq/openai/gpt-oss-120b",
+        model="groq/qwen/qwen3.8-27b",
         api_key=api_key,
         temperature=0.1,
         max_tokens=1600,
