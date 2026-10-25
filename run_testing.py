@@ -1,22 +1,19 @@
 
-from pathlib import Path
 import json
+from pathlib import Path
 
 from src.blackboard import Blackboard
-from src.models import ProjectRequest
+from src.debugging_agent import diagnose_failure
+from src.models import ArchitecturePlan, ProjectRequest
 from src.testing_agent import run_project_tests
 
 
 def main():
     task_id = "6d4515a7-eb77-45c5-ae7a-cd7d14e7bd55"
 
-    workspace = (
-        Path(__file__).resolve().parent
-        / "generated_projects"
-        / task_id
-    )
+    project_root = Path(__file__).resolve().parent
+    workspace = project_root / "generated_projects" / task_id
 
-    # Reconstruct the project request for this demonstration.
     request = ProjectRequest(
         project_name="Todo API",
         description=(
@@ -41,9 +38,6 @@ def main():
         task_id=task_id,
         request=request,
     )
-
-    # Restore the status required before recording generated files.
-    from src.models import ArchitecturePlan
 
     plan = ArchitecturePlan(
         project_name="Todo API",
@@ -70,8 +64,6 @@ def main():
         acceptance_criteria=request.acceptance_criteria,
     )
 
-    blackboard.update_architecture(plan)
-
     generated_files = [
         "app.py",
         "models.py",
@@ -79,31 +71,67 @@ def main():
         "tests/test_api.py",
         "requirements.txt",
     ]
-    blackboard.record_code_files(generated_files)
 
-    print("Running generated project tests...")
-    result = run_project_tests(workspace)
+    try:
+        # Step 1: Restore the project state for this demonstration.
+        blackboard.update_architecture(plan)
+        blackboard.record_code_files(generated_files)
 
-    # Record the test results and update workflow status.
-    state = blackboard.record_test_result(result)
+        print("\n=== STEP 1: RUN TESTS ===")
+        print("Workspace:", workspace)
 
-    print("\n=== TEST RESULT ===")
-    print(result.model_dump_json(indent=2))
+        result = run_project_tests(workspace)
+        state = blackboard.record_test_result(result)
 
-    print("\n=== UPDATED BLACKBOARD ===")
-    print(json.dumps(
-        {
-            "task_id": state.task_id,
-            "status": state.status,
-            "code_files": state.code_files,
-            "test_result": (
-                state.test_result.model_dump()
-                if state.test_result
-                else None
-            ),
-        },
-        indent=2,
-    ))
+        print("\n=== TEST RESULT ===")
+        print(result.model_dump_json(indent=2))
+        print("Current status:", state.status)
+
+        # Step 2: Diagnose failures only.
+        if result.failed > 0:
+            print("\n=== STEP 2: DEBUGGING AGENT ===")
+            print("Tests failed. Requesting a structured diagnosis...")
+
+            report = diagnose_failure(
+                test_result=result,
+                code_files=state.code_files,
+                workspace=workspace,
+            )
+
+            if report is None:
+                raise RuntimeError(
+                    "Tests failed, but the Debugging Agent returned no report."
+                )
+
+            state = blackboard.record_debug_report(report)
+
+            print("\n=== DEBUG REPORT ===")
+            print(report.model_dump_json(indent=2))
+
+        else:
+            print("\nAll tests passed. Debugging Agent was not needed.")
+
+        # Step 3: Display the complete state.
+        state = blackboard.get_state()
+
+        print("\n=== FINAL BLACKBOARD STATE ===")
+        print(json.dumps(state.model_dump(mode="json"), indent=2))
+
+    except Exception as error:
+        # Record workflow errors without hiding the original exception.
+        try:
+            blackboard.record_error(
+                f"{type(error).__name__}: {error}"
+            )
+        except Exception:
+            pass
+
+        print("\nWorkflow failed.")
+        print("Error type:", type(error).__name__)
+        print("Error message:", error)
+        print("\nBlackboard state:")
+        print(blackboard.get_state().model_dump_json(indent=2))
+        raise
 
 
 if __name__ == "__main__":
