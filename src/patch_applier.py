@@ -6,38 +6,49 @@ from pathlib import Path
 from src.patch_validator import CodePatch, validate_patch
 
 
+def _create_unique_backup(target: Path, original_bytes: bytes) -> Path:
+    """Create a new backup without overwriting any existing backup."""
+
+    base = target.with_name(target.name + ".bak")
+    counter = 0
+
+    while True:
+        backup = (
+            base
+            if counter == 0
+            else base.with_name(f"{base.name}.{counter}")
+        )
+
+        try:
+            with backup.open("xb") as backup_file:
+                backup_file.write(original_bytes)
+            return backup
+        except FileExistsError:
+            counter += 1
+
+
 def apply_patch(
     patch: CodePatch,
     workspace: Path,
     allowed_files: list[str],
 ) -> dict[str, str]:
-    """
-    Apply one validated exact-text patch to an existing file.
-
-    Creates a .bak backup before replacing the file.
-    Refuses ambiguous, stale, or unapproved patches.
-    """
+    """Apply one validated patch and preserve the original file."""
 
     workspace = Path(workspace).resolve()
 
-    # Validate target path and ensure the original text matches uniquely.
     target = validate_patch(
         patch=patch,
         workspace=workspace,
         allowed_files=allowed_files,
     )
 
-    # Read the exact current bytes so the backup preserves the original file.
     original_bytes = target.read_bytes()
 
     try:
         original_text = original_bytes.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise ValueError(
-            "Only UTF-8 files can be patched."
-        ) from error
+        raise ValueError("Only UTF-8 files can be patched.") from error
 
-    # Recheck immediately before applying the patch.
     if original_text.count(patch.original_text) != 1:
         raise ValueError(
             "File content changed or patch became ambiguous."
@@ -52,21 +63,11 @@ def apply_patch(
     if updated_text == original_text:
         raise ValueError("Patch would not change the file.")
 
-    backup = target.with_name(target.name + ".bak")
-
-    # Never overwrite an earlier backup.
-    try:
-        with backup.open("xb") as backup_file:
-            backup_file.write(original_bytes)
-    except FileExistsError as error:
-        raise FileExistsError(
-            f"Backup already exists; refusing to overwrite it: {backup}"
-        ) from error
-
+    # Create a unique backup; never overwrite earlier backups.
+    backup = _create_unique_backup(target, original_bytes)
     temporary_path = None
 
     try:
-        # Create a temporary file beside the target, then atomically replace it.
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -81,7 +82,7 @@ def apply_patch(
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
 
-        # Recheck that the target has not changed since we read it.
+        # Do not overwrite a file changed after our initial read.
         if target.read_bytes() != original_bytes:
             raise RuntimeError(
                 "Target file changed during patch preparation; "
@@ -92,20 +93,19 @@ def apply_patch(
         temporary_path = None
 
     except Exception:
-        # Remove the temporary file if one was created.
         if temporary_path is not None:
             try:
                 temporary_path.unlink(missing_ok=True)
             except OSError:
                 pass
 
-        # If applying failed, remove the backup created by this invocation.
-        # The original target is left unchanged unless replacement succeeded.
-        if target.read_bytes() == original_bytes:
-            try:
+        # Keep the backup if the target may have changed.
+        # Delete it only if the original content is still intact.
+        try:
+            if target.read_bytes() == original_bytes:
                 backup.unlink(missing_ok=True)
-            except OSError:
-                pass
+        except OSError:
+            pass
 
         raise
 
