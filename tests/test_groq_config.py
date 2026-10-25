@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 class TestGroqConfiguration(unittest.TestCase):
     def test_groq_api_key_is_configured(self):
-        load_dotenv()
+        load_dotenv(override=True)
 
         api_key = os.getenv("GROQ_API_KEY")
 

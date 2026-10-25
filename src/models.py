@@ -5,13 +5,25 @@ from pydantic import BaseModel, Field
 
 
 class ProjectRequest(BaseModel):
-    """The requirements submitted by the user."""
+    """Requirements submitted by the user."""
 
     project_name: str = Field(min_length=3, max_length=100)
     description: str = Field(min_length=10, max_length=5000)
     language: str = Field(min_length=1)
     features: list[str] = Field(min_length=1)
     acceptance_criteria: list[str] = Field(default_factory=list)
+
+
+class ArchitecturePlan(BaseModel):
+    """Structured design produced by the Architecture Agent."""
+
+    project_name: str
+    summary: str
+    components: list[str] = Field(min_length=1)
+    proposed_files: list[str] = Field(min_length=1)
+    implementation_steps: list[str] = Field(min_length=1)
+    acceptance_criteria: list[str] = Field(min_length=1)
+    risks: list[str] = Field(default_factory=list)
 
 
 class TestResult(BaseModel):
@@ -39,7 +51,7 @@ class ProjectState(BaseModel):
         "failed",
     ] = "planning"
 
-    architecture_plan: str | None = None
+    architecture_plan: ArchitecturePlan | None = None
     code_files: list[str] = Field(default_factory=list)
     test_result: TestResult | None = None
     errors: list[str] = Field(default_factory=list)
