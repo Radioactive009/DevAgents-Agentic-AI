@@ -73,7 +73,7 @@ def run_project_tests(
         return TestResult(
             passed=0,
             failed=1,
-            summary=f"Tests exceeded the {timeout_seconds}-second timeout.",
+            summary=f"Tests timed out after {timeout_seconds} seconds.",
             error_details=[
                 f"Test execution timed out after {timeout_seconds} seconds."
             ],
