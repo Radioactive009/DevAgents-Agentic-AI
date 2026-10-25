@@ -23,6 +23,7 @@ class ArchitecturePlan(BaseModel):
 
 
 class TestResult(BaseModel):
+    __test__= False
     passed: int = Field(default=0, ge=0)
     failed: int = Field(default=0, ge=0)
     summary: str = ""
