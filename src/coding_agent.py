@@ -134,18 +134,16 @@ def generate_code(
         description=(
             "Generate a minimal implementation for this project.\n\n"
             "Architecture plan:\n{architecture_plan}\n\n"
-            "Requirements:\n"
-            "- Generate 1 to 8 small files.\n"
-            "- Every path must be relative, such as app.py or tests/test_app.py.\n"
+            "Strict Requirements:\n"
+            "- Generate exactly 2 to 4 compact files (e.g. app.py, models.py, test_app.py).\n"
+            "- Keep code concise and minimal; avoid comments and verbose docstrings.\n"
+            "- Every path must be relative, such as main.py or test_main.py.\n"
             "- Do not use absolute paths or '..'.\n"
-            "- Include complete file contents, not explanations in place of code.\n"
-            "- Keep the implementation consistent across files.\n"
-            "- Do not claim tests were run.\n"
-            "- Return the required structured output."
+            "- Return only the structured CodeGenerationResult."
         ),
         expected_output=(
-            "A CodeGenerationResult containing relative file paths, complete "
-            "file contents, and a short summary."
+            "A CodeGenerationResult containing 2 to 4 relative files with concise "
+            "code, and a one-sentence summary."
         ),
         agent=coder,
         output_pydantic=CodeGenerationResult,
