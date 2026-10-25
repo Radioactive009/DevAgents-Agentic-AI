@@ -1,14 +1,11 @@
 
 import os
 from pathlib import Path
-from src.models import DebugReport, TestResult
+
 from dotenv import load_dotenv
-from pydantic import Field
 from crewai import Agent, Crew, LLM, Process, Task
 
-
-
-
+from src.models import DebugReport, TestResult
 
 
 def diagnose_failure(
@@ -19,7 +16,7 @@ def diagnose_failure(
     """
     Diagnose test failures and return a structured report.
 
-    This function only analyzes failures. It does not modify project files.
+    This function analyzes failures only. It does not modify project files.
     """
 
     if test_result.failed == 0:
@@ -30,9 +27,8 @@ def diagnose_failure(
 
     workspace = Path(workspace).resolve()
 
-    # Read only the files explicitly listed by the workflow.
-    # Restrict file access to the generated project's workspace.
     file_context = []
+    normalized_files = []
 
     for relative_path in code_files[:8]:
         normalized = relative_path.replace("\\", "/")
@@ -50,17 +46,19 @@ def diagnose_failure(
         file_path = (workspace / normalized).resolve()
 
         if not file_path.is_relative_to(workspace):
-            raise ValueError(f"File is outside workspace: {relative_path}")
+            raise ValueError(
+                f"File is outside workspace: {relative_path}"
+            )
 
         if not file_path.is_file():
             continue
 
-        # Limit each file's context sent to the LLM.
         content = file_path.read_text(
             encoding="utf-8",
             errors="replace",
         )[:8000]
 
+        normalized_files.append(normalized)
         file_context.append(
             f"\n--- FILE: {normalized} ---\n{content}"
         )
@@ -140,7 +138,7 @@ def diagnose_failure(
     response = crew.kickoff(
         inputs={
             "test_result": test_result.model_dump_json(indent=2),
-            "code_files": "\n".join(code_files[:8]),
+            "code_files": "\n".join(normalized_files),
             "file_context": "\n".join(file_context),
         }
     )
@@ -152,10 +150,13 @@ def diagnose_failure(
             "The Debugging Agent did not return a valid DebugReport."
         )
 
-    # Ensure the LLM did not invent file paths.
-    allowed_files = set(code_files)
+    allowed_files = set(normalized_files)
+    reported_files = {
+        path.replace("\\", "/")
+        for path in report.affected_files
+    }
 
-    if not set(report.affected_files).issubset(allowed_files):
+    if not reported_files.issubset(allowed_files):
         raise ValueError(
             "Debug report contains file paths not supplied by the workflow."
         )
