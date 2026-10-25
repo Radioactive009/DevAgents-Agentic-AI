@@ -1,23 +1,14 @@
 
 import os
 from pathlib import Path
-from typing import Literal
-
+from src.models import DebugReport, TestResult
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import Field
 from crewai import Agent, Crew, LLM, Process, Task
 
-from src.models import TestResult
 
 
-class DebugReport(BaseModel):
-    diagnosis: str = Field(min_length=1, max_length=2000)
-    root_cause: str = Field(min_length=1, max_length=2000)
-    severity: Literal["low", "medium", "high", "critical"]
-    affected_files: list[str] = Field(default_factory=list, max_length=8)
-    recommended_fixes: list[str] = Field(min_length=1, max_length=8)
-    confidence: float = Field(ge=0.0, le=1.0)
-    needs_more_information: bool = False
+
 
 
 def diagnose_failure(

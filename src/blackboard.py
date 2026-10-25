@@ -3,6 +3,7 @@ from threading import RLock
 
 from src.models import (
     ArchitecturePlan,
+    DebugReport,
     ProjectRequest,
     ProjectState,
     TestResult,
@@ -58,13 +59,12 @@ class Blackboard:
             raise ValueError("Duplicate file paths are not allowed.")
 
         with self._lock:
-            if self._state.status not in ("coding",):
+            if self._state.status != "coding":
                 raise ValueError(
                     "Code files can only be recorded while coding."
                 )
 
             self._state.code_files = cleaned_paths
-
             return self._state.model_copy(deep=True)
 
     def update_status(self, status: str) -> ProjectState:
@@ -84,6 +84,37 @@ class Blackboard:
             else:
                 self._state.status = "verifying"
 
+            return self._state.model_copy(deep=True)
+
+    def record_debug_report(
+        self,
+        report: DebugReport,
+    ) -> ProjectState:
+        with self._lock:
+            if self._state.status != "debugging":
+                raise ValueError(
+                    "A debug report can only be recorded while debugging."
+                )
+
+            if self._state.test_result is None:
+                raise ValueError(
+                    "A test result must be recorded before debugging."
+                )
+
+            if self._state.test_result.failed == 0:
+                raise ValueError(
+                    "A debug report requires at least one failed test."
+                )
+
+            allowed_files = set(self._state.code_files)
+
+            if not set(report.affected_files).issubset(allowed_files):
+                raise ValueError(
+                    "Debug report references files not recorded "
+                    "in the Blackboard."
+                )
+
+            self._state.debug_report = report
             return self._state.model_copy(deep=True)
 
     def record_error(self, error: str) -> ProjectState:
