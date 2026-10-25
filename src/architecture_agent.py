@@ -7,7 +7,7 @@ from crewai import Agent, Crew, LLM, Process, Task
 from src.models import ArchitecturePlan, ProjectRequest
 
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 def create_architecture_agent() -> Agent:
@@ -19,7 +19,7 @@ def create_architecture_agent() -> Agent:
         )
 
     llm = LLM(
-        model="groq/openai/gpt-oss-120b",
+        model="groq/qwen/qwen3.8-27b",
         api_key=api_key,
         temperature=0.1,
         max_tokens=800,
