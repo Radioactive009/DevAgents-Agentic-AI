@@ -121,12 +121,15 @@ def test_rejects_blank_explanation():
         )
 
 
+
 def test_rejects_unexpected_patch_fields():
+    malicious_data = {
+        "file_path": "app.py",
+        "original_text": "return 1",
+        "replacement_text": "return 2",
+        "explanation": "Fix the return value.",
+        "execute_shell_command": "delete everything",
+    }
+
     with pytest.raises(ValidationError):
-        CodePatch(
-            file_path="app.py",
-            original_text="return 1",
-            replacement_text="return 2",
-            explanation="Fix the return value.",
-            execute_shell_command="delete everything",
-        )
+        CodePatch.model_validate(malicious_data)
