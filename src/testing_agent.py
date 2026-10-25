@@ -1,5 +1,6 @@
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -9,25 +10,31 @@ from src.models import TestResult
 def run_project_tests(
     workspace: Path,
     timeout_seconds: int = 60,
+    allowed_root: Path | None = None,
 ) -> TestResult:
-    """
-    Run pytest for a generated project and return structured results.
+    """Run pytest for a project inside an explicitly allowed workspace."""
 
-    Only projects inside the designated generated_projects directory
-    are eligible to run.
-    """
     project_root = Path(__file__).resolve().parent.parent
-    allowed_root = (project_root / "generated_projects").resolve()
-    workspace = workspace.resolve()
+
+    if allowed_root is None:
+        allowed_root = project_root / "generated_projects"
+
+    allowed_root = Path(allowed_root).resolve()
+    workspace = Path(workspace).resolve()
 
     if not workspace.is_relative_to(allowed_root):
         raise ValueError(
-            "Testing is restricted to generated_projects workspaces."
+            "Testing is restricted to the allowed workspace."
         )
 
     if not workspace.is_dir():
         raise FileNotFoundError(
             f"Project workspace does not exist: {workspace}"
+        )
+
+    if not 1 <= timeout_seconds <= 300:
+        raise ValueError(
+            "timeout_seconds must be between 1 and 300."
         )
 
     test_directory = workspace / "tests"
@@ -42,11 +49,6 @@ def run_project_tests(
     if not test_files:
         raise FileNotFoundError(
             "No test_*.py files were found in the project's tests directory."
-        )
-
-    if timeout_seconds < 1 or timeout_seconds > 300:
-        raise ValueError(
-            "timeout_seconds must be between 1 and 300."
         )
 
     command = [
@@ -67,7 +69,6 @@ def run_project_tests(
             timeout=timeout_seconds,
             check=False,
         )
-
     except subprocess.TimeoutExpired:
         return TestResult(
             passed=0,
@@ -87,18 +88,12 @@ def run_project_tests(
     passed = 0
     failed = 0
 
-    # Read pytest's summary, for example:
-    # 12 passed in 0.65s
-    # 2 failed, 10 passed in 1.20s
-    import re
-
-    summary_matches = re.findall(
+    # Extract pytest's final summary counts.
+    for count_text, outcome in re.findall(
         r"(\d+)\s+(passed|failed|error|skipped|xfailed|xpassed)",
         output,
         flags=re.IGNORECASE,
-    )
-
-    for count_text, outcome in summary_matches:
+    ):
         count = int(count_text)
         outcome = outcome.lower()
 

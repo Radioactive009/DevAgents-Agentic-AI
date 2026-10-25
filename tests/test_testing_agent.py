@@ -1,6 +1,7 @@
 
 import tempfile
 import unittest
+import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -19,41 +20,49 @@ class TestTestingAgent(unittest.TestCase):
         self.tests_dir = self.workspace / "tests"
 
         self.tests_dir.mkdir(parents=True)
+
         (self.tests_dir / "test_example.py").write_text(
             "def test_example():\n    assert True\n",
             encoding="utf-8",
         )
 
     def test_rejects_workspace_outside_generated_projects(self):
-        with patch(
-            "src.testing_agent.Path"
-        ) as mocked_path:
-            mocked_path.return_value.resolve.return_value = (
-                self.project_root / "src" / "testing_agent.py"
-            )
+        outside_workspace = self.project_root / "outside"
+        outside_workspace.mkdir()
 
-            # Use the real function for path construction.
-            # The workspace is outside the allowed directory.
-            with self.assertRaises(ValueError):
-                run_project_tests(self.project_root)
+        with self.assertRaises(ValueError):
+            run_project_tests(
+                outside_workspace,
+                allowed_root=self.allowed_root,
+            )
 
     def test_rejects_invalid_timeout(self):
         with self.assertRaises(ValueError):
-            run_project_tests(self.workspace, timeout_seconds=0)
+            run_project_tests(
+                self.workspace,
+                timeout_seconds=0,
+                allowed_root=self.allowed_root,
+            )
 
     def test_rejects_missing_tests_directory(self):
         empty_workspace = self.allowed_root / "empty-task"
         empty_workspace.mkdir(parents=True)
 
         with self.assertRaises(FileNotFoundError):
-            run_project_tests(empty_workspace)
+            run_project_tests(
+                empty_workspace,
+                allowed_root=self.allowed_root,
+            )
 
     def test_rejects_no_test_files(self):
         empty_test_workspace = self.allowed_root / "no-tests"
         (empty_test_workspace / "tests").mkdir(parents=True)
 
         with self.assertRaises(FileNotFoundError):
-            run_project_tests(empty_test_workspace)
+            run_project_tests(
+                empty_test_workspace,
+                allowed_root=self.allowed_root,
+            )
 
     def test_parses_successful_pytest_result(self):
         completed = MagicMock()
@@ -65,7 +74,10 @@ class TestTestingAgent(unittest.TestCase):
             "src.testing_agent.subprocess.run",
             return_value=completed,
         ):
-            result = run_project_tests(self.workspace)
+            result = run_project_tests(
+                self.workspace,
+                allowed_root=self.allowed_root,
+            )
 
         self.assertEqual(result.passed, 12)
         self.assertEqual(result.failed, 0)
@@ -81,15 +93,16 @@ class TestTestingAgent(unittest.TestCase):
             "src.testing_agent.subprocess.run",
             return_value=completed,
         ):
-            result = run_project_tests(self.workspace)
+            result = run_project_tests(
+                self.workspace,
+                allowed_root=self.allowed_root,
+            )
 
         self.assertEqual(result.passed, 10)
         self.assertEqual(result.failed, 2)
         self.assertTrue(result.error_details)
 
     def test_handles_timeout(self):
-        import subprocess
-
         with patch(
             "src.testing_agent.subprocess.run",
             side_effect=subprocess.TimeoutExpired(
@@ -97,7 +110,10 @@ class TestTestingAgent(unittest.TestCase):
                 timeout=1,
             ),
         ):
-            result = run_project_tests(self.workspace)
+            result = run_project_tests(
+                self.workspace,
+                allowed_root=self.allowed_root,
+            )
 
         self.assertEqual(result.passed, 0)
         self.assertEqual(result.failed, 1)
