@@ -22,7 +22,9 @@ def create_test_workflow(workspace: Path):
         description="A small Python application used to test automatic repair.",
         language="Python",
         features=["Calculate a value"],
-        acceptance_criteria=["The calculation returns the expected value."],
+        acceptance_criteria=[
+            "The calculation returns the expected value."
+        ],
     )
 
     plan = ArchitecturePlan(
@@ -88,12 +90,23 @@ def make_patch(original_text, replacement_text):
     )
 
 
-def install_test_workflow(monkeypatch, blackboard, workspace):
-    """Prevent tests from using the real demo workspace."""
+def install_test_workflow(
+    monkeypatch,
+    blackboard,
+    workspace,
+    tmp_path,
+):
+    """Isolate the workflow workspace and audit log from real project data."""
     monkeypatch.setattr(
         run_repair_loop,
         "create_demo_workflow",
         lambda: (blackboard, workspace),
+    )
+
+    monkeypatch.setattr(
+        run_repair_loop,
+        "AUDIT_LOG_PATH",
+        tmp_path / "devagents_audit.jsonl",
     )
 
 
@@ -103,15 +116,23 @@ def test_repair_loop_skips_repair_when_initial_tests_pass(
     capsys,
 ):
     blackboard, workspace = create_test_workflow(tmp_path)
-    install_test_workflow(monkeypatch, blackboard, workspace)
+    install_test_workflow(
+        monkeypatch, blackboard, workspace, tmp_path
+    )
 
     run_tests = Mock(return_value=make_success())
     diagnose = Mock()
     propose = Mock()
 
-    monkeypatch.setattr(run_repair_loop, "run_project_tests", run_tests)
-    monkeypatch.setattr(run_repair_loop, "diagnose_failure", diagnose)
-    monkeypatch.setattr(run_repair_loop, "propose_repair", propose)
+    monkeypatch.setattr(
+        run_repair_loop, "run_project_tests", run_tests
+    )
+    monkeypatch.setattr(
+        run_repair_loop, "diagnose_failure", diagnose
+    )
+    monkeypatch.setattr(
+        run_repair_loop, "propose_repair", propose
+    )
 
     run_repair_loop.main()
 
@@ -123,7 +144,20 @@ def test_repair_loop_skips_repair_when_initial_tests_pass(
     assert final_state.status == "verifying"
     assert final_state.test_result.failed == 0
 
-    assert "No repair was needed" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "No repair was needed" in output
+
+    # Audit events should be written to the isolated test location.
+    audit_path = tmp_path / "devagents_audit.jsonl"
+    assert audit_path.is_file()
+
+    audit_text = audit_path.read_text(encoding="utf-8")
+    assert "workflow_started" in audit_text
+    assert "test_run_completed" in audit_text
+    assert "workflow_completed" in audit_text
+
+    # The real project audit path should not be selected by this test.
+    assert run_repair_loop.AUDIT_LOG_PATH == audit_path
 
 
 def test_repair_loop_applies_patch_and_passes_retest(
@@ -132,7 +166,9 @@ def test_repair_loop_applies_patch_and_passes_retest(
     capsys,
 ):
     blackboard, workspace = create_test_workflow(tmp_path)
-    install_test_workflow(monkeypatch, blackboard, workspace)
+    install_test_workflow(
+        monkeypatch, blackboard, workspace, tmp_path
+    )
 
     run_tests = Mock(
         side_effect=[make_failure(), make_success()]
@@ -142,9 +178,15 @@ def test_repair_loop_applies_patch_and_passes_retest(
         return_value=make_patch("return 1", "return 2")
     )
 
-    monkeypatch.setattr(run_repair_loop, "run_project_tests", run_tests)
-    monkeypatch.setattr(run_repair_loop, "diagnose_failure", diagnose)
-    monkeypatch.setattr(run_repair_loop, "propose_repair", propose)
+    monkeypatch.setattr(
+        run_repair_loop, "run_project_tests", run_tests
+    )
+    monkeypatch.setattr(
+        run_repair_loop, "diagnose_failure", diagnose
+    )
+    monkeypatch.setattr(
+        run_repair_loop, "propose_repair", propose
+    )
 
     run_repair_loop.main()
 
@@ -172,6 +214,16 @@ def test_repair_loop_applies_patch_and_passes_retest(
     assert "Repair succeeded: all tests now pass." in output
     assert "Final outcome: all tests passed." in output
 
+    # Check that repair-related events were audited.
+    audit_path = tmp_path / "devagents_audit.jsonl"
+    audit_text = audit_path.read_text(encoding="utf-8")
+    assert "diagnosis_completed" in audit_text
+    assert "repair_proposed" in audit_text
+    assert "patch_validated" in audit_text
+    assert "patch_applied" in audit_text
+    assert "repair_attempt_completed" in audit_text
+    assert "workflow_completed" in audit_text
+
 
 def test_repair_loop_stops_after_maximum_attempts(
     monkeypatch,
@@ -179,7 +231,9 @@ def test_repair_loop_stops_after_maximum_attempts(
     capsys,
 ):
     blackboard, workspace = create_test_workflow(tmp_path)
-    install_test_workflow(monkeypatch, blackboard, workspace)
+    install_test_workflow(
+        monkeypatch, blackboard, workspace, tmp_path
+    )
 
     run_tests = Mock(
         side_effect=[
@@ -200,9 +254,15 @@ def test_repair_loop_stops_after_maximum_attempts(
         ]
     )
 
-    monkeypatch.setattr(run_repair_loop, "run_project_tests", run_tests)
-    monkeypatch.setattr(run_repair_loop, "diagnose_failure", diagnose)
-    monkeypatch.setattr(run_repair_loop, "propose_repair", propose)
+    monkeypatch.setattr(
+        run_repair_loop, "run_project_tests", run_tests
+    )
+    monkeypatch.setattr(
+        run_repair_loop, "diagnose_failure", diagnose
+    )
+    monkeypatch.setattr(
+        run_repair_loop, "propose_repair", propose
+    )
 
     run_repair_loop.main()
 
@@ -218,3 +278,10 @@ def test_repair_loop_stops_after_maximum_attempts(
     output = capsys.readouterr().out
     assert "Repair limit reached" in output
     assert "Final outcome: unresolved test failures." in output
+
+    # Confirm the unresolved outcome and repair limit were audited.
+    audit_path = tmp_path / "devagents_audit.jsonl"
+    audit_text = audit_path.read_text(encoding="utf-8")
+    assert "repair_limit_reached" in audit_text
+    assert "workflow_completed" in audit_text
+    assert '"status":"unresolved"' in audit_text
