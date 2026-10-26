@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 from typing import Any
-
+from src.trace_context import TraceContext
 from src.audit_logger import AuditLogger
 from src.blackboard import Blackboard
 from src.debugging_agent import diagnose_failure
@@ -128,6 +128,9 @@ def main():
     blackboard, workspace = create_demo_workflow()
     task_id = blackboard.get_state().task_id
     logger = AuditLogger(AUDIT_LOG_PATH)
+
+    trace = TraceContext(task_id)
+    trace_id = trace.trace_id
 
     attempts: list[dict[str, Any]] = []
     current_attempt = None
