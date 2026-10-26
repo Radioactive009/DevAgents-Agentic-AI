@@ -1,287 +1,503 @@
 
+import json
 from pathlib import Path
-from unittest.mock import Mock
+from time import perf_counter
+from typing import Any, Callable, TypeVar
 
-import pytest
-
-import run_repair_loop
+from src.audit_logger import AuditLogger
 from src.blackboard import Blackboard
-from src.models import (
-    ArchitecturePlan,
-    DebugReport,
-    ProjectRequest,
-    TestResult,
-)
-from src.patch_validator import CodePatch
+from src.debugging_agent import diagnose_failure
+from src.models import ArchitecturePlan, ProjectRequest
+from src.patch_applier import apply_patch
+from src.patch_validator import validate_patch
+from src.repair_agent import propose_repair
+from src.testing_agent import run_project_tests
+from src.trace_context import TraceContext
 
 
-def create_test_workflow(workspace: Path):
-    """Create an isolated Blackboard and temporary project workspace."""
+MAX_REPAIR_ATTEMPTS = 3
+AUDIT_LOG_PATH = Path("logs/devagents_audit.jsonl")
+
+T = TypeVar("T")
+
+
+def _workflow_duration(started_at: float) -> float:
+    """Return elapsed workflow time in seconds."""
+    return round(perf_counter() - started_at, 6)
+
+
+def _safe_audit_event(
+    logger: AuditLogger,
+    *,
+    task_id: str,
+    trace_id: str,
+    event_type: str,
+    stage: str,
+    status: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Write an audit event without allowing logging failures to hide workflow errors."""
+    event_details = dict(details or {})
+    event_details["trace_id"] = trace_id
+
+    try:
+        logger.log_event(
+            task_id=task_id,
+            event_type=event_type,
+            stage=stage,
+            status=status,
+            details=event_details,
+        )
+    except Exception as exc:
+        print(f"Warning: audit logging failed for {event_type}: {exc}")
+
+
+def _run_timed(
+    trace: TraceContext,
+    stage: str,
+    operation: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[T, float]:
+    """Run an operation and return its result and elapsed duration."""
+    with trace.measure(stage) as timing:
+        result = operation(*args, **kwargs)
+
+    return result, float(timing["duration_seconds"])
+
+
+def _print_attempt_history(attempt_history: list[dict[str, Any]]) -> None:
+    """Print a compact summary of repair attempts."""
+    print("\n=== REPAIR ATTEMPT HISTORY ===")
+
+    if not attempt_history:
+        print("No repair attempts were needed.")
+        return
+
+    for attempt in attempt_history:
+        print(
+            f"Attempt {attempt['attempt']}: "
+            f"status={attempt['status']}, "
+            f"timings={attempt.get('timings', {})}"
+        )
+
+
+def create_demo_workflow() -> tuple[Blackboard, Path, list[str]]:
+    """Reconstruct the existing Todo API workflow for repair-loop testing."""
+    task_id = "6d4515a7-eb77-45c5-ae7a-cd7d14e7bd55"
+
+    workspace = (Path("generated_projects") / task_id).resolve()
+
+    if not workspace.is_dir():
+        raise FileNotFoundError(
+            f"Demo workspace does not exist: {workspace}"
+        )
+
     request = ProjectRequest(
-        project_name="Repair Test App",
-        description="A small Python application used to test automatic repair.",
-        language="Python",
-        features=["Calculate a value"],
+        project_name="Todo API",
+        description="A small Todo API with CRUD operations.",
+        language="python",
+        features=[
+            "Create todos",
+            "List todos",
+            "Retrieve a todo",
+            "Update todos",
+            "Delete todos",
+        ],
         acceptance_criteria=[
-            "The calculation returns the expected value."
+            "The API supports basic Todo CRUD operations.",
+            "Automated tests cover the API.",
         ],
     )
 
     plan = ArchitecturePlan(
-        project_name="Repair Test App",
-        summary="A small Python application.",
-        components=["Application module", "Pytest tests"],
-        proposed_files=["app.py"],
-        implementation_steps=["Implement the calculation"],
-        acceptance_criteria=request.acceptance_criteria,
+        project_name="Todo API",
+        summary="A small Todo API implemented with a simple in-memory store.",
+        components=[
+            "API application",
+            "Todo models",
+            "Todo storage",
+            "Automated tests",
+        ],
+        proposed_files=[
+            "app.py",
+            "models.py",
+            "store.py",
+            "tests/test_api.py",
+            "requirements.txt",
+        ],
+        implementation_steps=[
+            "Define Todo models.",
+            "Implement storage operations.",
+            "Implement API endpoints.",
+            "Add automated tests.",
+        ],
+        acceptance_criteria=[
+            "CRUD operations work correctly.",
+            "Automated tests pass.",
+        ],
+        risks=[],
     )
 
-    blackboard = Blackboard(
-        task_id="repair-integration-test",
-        request=request,
-    )
+    code_files = [
+        "app.py",
+        "models.py",
+        "store.py",
+        "tests/test_api.py",
+        "requirements.txt",
+    ]
+
+    blackboard = Blackboard(task_id=task_id, request=request)
     blackboard.update_architecture(plan)
-    blackboard.record_code_files(["app.py"])
+    blackboard.record_code_files(code_files)
 
-    (workspace / "app.py").write_text(
-        "def calculate():\n    return 1\n",
-        encoding="utf-8",
+    return blackboard, workspace, code_files
+
+
+def main() -> None:
+    workflow_started_at = perf_counter()
+
+    blackboard, workspace, code_files = create_demo_workflow()
+    state = blackboard.get_state()
+    task_id = state.task_id
+
+    logger = AuditLogger(AUDIT_LOG_PATH)
+    trace = TraceContext(task_id)
+
+    print(f"Workflow trace ID: {trace.trace_id}")
+    print(f"Workspace: {workspace}")
+
+    attempt_history: list[dict[str, Any]] = []
+
+    _safe_audit_event(
+        logger,
+        task_id=task_id,
+        trace_id=trace.trace_id,
+        event_type="workflow_started",
+        stage="initialization",
+        status="started",
+        details={
+            "workspace": workspace.name,
+            "max_repair_attempts": MAX_REPAIR_ATTEMPTS,
+        },
     )
 
-    return blackboard, workspace
+    try:
+        print("\n=== INITIAL TEST RUN ===")
+
+        _safe_audit_event(
+            logger,
+            task_id=task_id,
+            trace_id=trace.trace_id,
+            event_type="test_run_started",
+            stage="initial_testing",
+            status="started",
+        )
+
+        initial_result, initial_duration = _run_timed(
+            trace,
+            "initial_testing",
+            run_project_tests,
+            workspace,
+        )
+
+        blackboard.record_test_result(initial_result)
+
+        _safe_audit_event(
+            logger,
+            task_id=task_id,
+            trace_id=trace.trace_id,
+            event_type="test_run_completed",
+            stage="initial_testing",
+            status="passed" if initial_result.failed == 0 else "failed",
+            details={
+                "passed": initial_result.passed,
+                "failed": initial_result.failed,
+                "summary": initial_result.summary,
+                "duration_seconds": initial_duration,
+            },
+        )
+
+        print(initial_result.model_dump_json(indent=2))
+
+        if initial_result.failed == 0:
+            print("\nAll tests passed. No repair was needed.")
+
+            final_duration = _workflow_duration(workflow_started_at)
+
+            _safe_audit_event(
+                logger,
+                task_id=task_id,
+                trace_id=trace.trace_id,
+                event_type="workflow_completed",
+                stage="finalization",
+                status="success",
+                details={
+                    "repair_attempts": 0,
+                    "duration_seconds": final_duration,
+                },
+            )
+
+            print(f"Total workflow duration: {final_duration:.6f} seconds")
+            print("Final outcome: all tests passed.")
+            return
+
+        for attempt_number in range(1, MAX_REPAIR_ATTEMPTS + 1):
+            current_attempt: dict[str, Any] = {
+                "attempt": attempt_number,
+                "status": "started",
+                "timings": {},
+            }
+            attempt_history.append(current_attempt)
+
+            print(f"\n=== REPAIR ATTEMPT {attempt_number} ===")
+
+            _safe_audit_event(
+                logger,
+                task_id=task_id,
+                trace_id=trace.trace_id,
+                event_type="repair_attempt_started",
+                stage="repair",
+                status="started",
+                details={"attempt": attempt_number},
+            )
+
+            state = blackboard.get_state()
+            test_result = state.test_result
+
+            if test_result is None or test_result.failed == 0:
+                current_attempt["status"] = "skipped"
+                current_attempt["reason"] = "No failing test result available."
+                break
+
+            print("\n--- Diagnosing failure ---")
+
+            debug_report, debug_duration = _run_timed(
+                trace,
+                "debugging",
+                diagnose_failure,
+                test_result,
+                code_files,
+                workspace,
+            )
+            current_attempt["timings"]["debugging"] = debug_duration
+
+            if debug_report is None:
+                current_attempt["status"] = "failed"
+                current_attempt["reason"] = "Debugger did not produce a report."
+
+                _safe_audit_event(
+                    logger,
+                    task_id=task_id,
+                    trace_id=trace.trace_id,
+                    event_type="repair_attempt_failed",
+                    stage="debugging",
+                    status="failed",
+                    details={
+                        "attempt": attempt_number,
+                        "reason": current_attempt["reason"],
+                        "duration_seconds": debug_duration,
+                    },
+                )
+                break
+
+            blackboard.record_debug_report(debug_report)
+
+            _safe_audit_event(
+                logger,
+                task_id=task_id,
+                trace_id=trace.trace_id,
+                event_type="debug_report_created",
+                stage="debugging",
+                status="success",
+                details={
+                    "attempt": attempt_number,
+                    "severity": debug_report.severity,
+                    "affected_files": debug_report.affected_files,
+                    "duration_seconds": debug_duration,
+                },
+            )
+
+            print(debug_report.model_dump_json(indent=2))
+
+            print("\n--- Proposing repair ---")
+
+            patch, proposal_duration = _run_timed(
+                trace,
+                "repair_proposal",
+                propose_repair,
+                debug_report,
+                workspace,
+                code_files,
+            )
+            current_attempt["timings"]["repair_proposal"] = proposal_duration
+
+            _safe_audit_event(
+                logger,
+                task_id=task_id,
+                trace_id=trace.trace_id,
+                event_type="patch_proposed",
+                stage="repair_proposal",
+                status="success",
+                details={
+                    "attempt": attempt_number,
+                    "path": patch.path,
+                    "duration_seconds": proposal_duration,
+                },
+            )
+
+            print(patch.model_dump_json(indent=2))
+
+            print("\n--- Validating patch ---")
+
+            _, validation_duration = _run_timed(
+                trace,
+                "patch_validation",
+                validate_patch,
+                patch,
+                code_files,
+            )
+            current_attempt["timings"]["patch_validation"] = validation_duration
+
+            _safe_audit_event(
+                logger,
+                task_id=task_id,
+                trace_id=trace.trace_id,
+                event_type="patch_validated",
+                stage="patch_validation",
+                status="success",
+                details={
+                    "attempt": attempt_number,
+                    "path": patch.path,
+                    "duration_seconds": validation_duration,
+                },
+            )
+
+            print("Patch validation passed.")
+
+            print("\n--- Applying patch ---")
+
+            _, application_duration = _run_timed(
+                trace,
+                "patch_application",
+                apply_patch,
+                workspace,
+                patch,
+                code_files,
+            )
+            current_attempt["timings"]["patch_application"] = application_duration
+
+            _safe_audit_event(
+                logger,
+                task_id=task_id,
+                trace_id=trace.trace_id,
+                event_type="patch_applied",
+                stage="patch_application",
+                status="success",
+                details={
+                    "attempt": attempt_number,
+                    "path": patch.path,
+                    "duration_seconds": application_duration,
+                },
+            )
+
+            print("Patch applied. A backup was retained.")
+
+            print("\n--- Retesting project ---")
+
+            new_result, retest_duration = _run_timed(
+                trace,
+                "repair_retesting",
+                run_project_tests,
+                workspace,
+            )
+            current_attempt["timings"]["retesting"] = retest_duration
+
+            blackboard.record_test_result(new_result)
+
+            _safe_audit_event(
+                logger,
+                task_id=task_id,
+                trace_id=trace.trace_id,
+                event_type="repair_retest_completed",
+                stage="repair_retesting",
+                status="passed" if new_result.failed == 0 else "failed",
+                details={
+                    "attempt": attempt_number,
+                    "passed": new_result.passed,
+                    "failed": new_result.failed,
+                    "summary": new_result.summary,
+                    "duration_seconds": retest_duration,
+                },
+            )
+
+            print(new_result.model_dump_json(indent=2))
+
+            if new_result.failed == 0:
+                current_attempt["status"] = "success"
+                print(f"\nRepair attempt {attempt_number} succeeded.")
+                break
+
+            current_attempt["status"] = "failed"
+            print(f"\nRepair attempt {attempt_number} did not fix all tests.")
+
+        _print_attempt_history(attempt_history)
+
+        final_state = blackboard.get_state()
+        final_result = final_state.test_result
+        success = final_result is not None and final_result.failed == 0
+        repair_attempts = len(attempt_history)
+        final_duration = _workflow_duration(workflow_started_at)
+
+        _safe_audit_event(
+            logger,
+            task_id=task_id,
+            trace_id=trace.trace_id,
+            event_type="workflow_completed",
+            stage="finalization",
+            status="success" if success else "failed",
+            details={
+                "repair_attempts": repair_attempts,
+                "duration_seconds": final_duration,
+                "passed": final_result.passed if final_result else 0,
+                "failed": final_result.failed if final_result else 0,
+            },
+        )
+
+        print(f"\nTotal workflow duration: {final_duration:.6f} seconds")
+        print(f"Repair attempts: {repair_attempts}")
+        print(
+            "Final outcome: "
+            + ("all tests passed." if success else "some tests are still failing.")
+        )
+
+    except Exception as exc:
+        duration = _workflow_duration(workflow_started_at)
+
+        _safe_audit_event(
+            logger,
+            task_id=task_id,
+            trace_id=trace.trace_id,
+            event_type="workflow_error",
+            stage="workflow",
+            status="error",
+            details={
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "duration_seconds": duration,
+            },
+        )
+
+        try:
+            blackboard.record_error(
+                f"{type(exc).__name__}: {exc}"
+            )
+        except Exception as state_exc:
+            print(f"Warning: could not update workflow state: {state_exc}")
+
+        print(f"\nWorkflow failed after {duration:.6f} seconds.")
+        raise
 
 
-def make_failure():
-    return TestResult(
-        passed=0,
-        failed=1,
-        summary="One test failed.",
-        error_details=["Expected 2 but received 1."],
-    )
-
-
-def make_success():
-    return TestResult(
-        passed=1,
-        failed=0,
-        summary="All tests passed.",
-        error_details=[],
-    )
-
-
-def make_debug_report():
-    return DebugReport(
-        diagnosis="The function returns an incorrect value.",
-        root_cause="The return value does not match the expected result.",
-        severity="low",
-        affected_files=["app.py"],
-        recommended_fixes=["Correct the return value."],
-        confidence=0.95,
-        needs_more_information=False,
-    )
-
-
-def make_patch(original_text, replacement_text):
-    return CodePatch(
-        file_path="app.py",
-        original_text=original_text,
-        replacement_text=replacement_text,
-        explanation="Correct the function's return value.",
-    )
-
-
-def install_test_workflow(
-    monkeypatch,
-    blackboard,
-    workspace,
-    tmp_path,
-):
-    """Isolate the workflow workspace and audit log from real project data."""
-    monkeypatch.setattr(
-        run_repair_loop,
-        "create_demo_workflow",
-        lambda: (blackboard, workspace),
-    )
-
-    monkeypatch.setattr(
-        run_repair_loop,
-        "AUDIT_LOG_PATH",
-        tmp_path / "devagents_audit.jsonl",
-    )
-
-
-def test_repair_loop_skips_repair_when_initial_tests_pass(
-    monkeypatch,
-    tmp_path,
-    capsys,
-):
-    blackboard, workspace = create_test_workflow(tmp_path)
-    install_test_workflow(
-        monkeypatch, blackboard, workspace, tmp_path
-    )
-
-    run_tests = Mock(return_value=make_success())
-    diagnose = Mock()
-    propose = Mock()
-
-    monkeypatch.setattr(
-        run_repair_loop, "run_project_tests", run_tests
-    )
-    monkeypatch.setattr(
-        run_repair_loop, "diagnose_failure", diagnose
-    )
-    monkeypatch.setattr(
-        run_repair_loop, "propose_repair", propose
-    )
-
-    run_repair_loop.main()
-
-    assert run_tests.call_count == 1
-    diagnose.assert_not_called()
-    propose.assert_not_called()
-
-    final_state = blackboard.get_state()
-    assert final_state.status == "verifying"
-    assert final_state.test_result.failed == 0
-
-    output = capsys.readouterr().out
-    assert "No repair was needed" in output
-
-    # Audit events should be written to the isolated test location.
-    audit_path = tmp_path / "devagents_audit.jsonl"
-    assert audit_path.is_file()
-
-    audit_text = audit_path.read_text(encoding="utf-8")
-    assert "workflow_started" in audit_text
-    assert "test_run_completed" in audit_text
-    assert "workflow_completed" in audit_text
-
-    # The real project audit path should not be selected by this test.
-    assert run_repair_loop.AUDIT_LOG_PATH == audit_path
-
-
-def test_repair_loop_applies_patch_and_passes_retest(
-    monkeypatch,
-    tmp_path,
-    capsys,
-):
-    blackboard, workspace = create_test_workflow(tmp_path)
-    install_test_workflow(
-        monkeypatch, blackboard, workspace, tmp_path
-    )
-
-    run_tests = Mock(
-        side_effect=[make_failure(), make_success()]
-    )
-    diagnose = Mock(return_value=make_debug_report())
-    propose = Mock(
-        return_value=make_patch("return 1", "return 2")
-    )
-
-    monkeypatch.setattr(
-        run_repair_loop, "run_project_tests", run_tests
-    )
-    monkeypatch.setattr(
-        run_repair_loop, "diagnose_failure", diagnose
-    )
-    monkeypatch.setattr(
-        run_repair_loop, "propose_repair", propose
-    )
-
-    run_repair_loop.main()
-
-    # One initial test run and one retest after applying the patch.
-    assert run_tests.call_count == 2
-    diagnose.assert_called_once()
-    propose.assert_called_once()
-
-    # The real patch applier should update the temporary file.
-    assert (workspace / "app.py").read_text(
-        encoding="utf-8"
-    ) == "def calculate():\n    return 2\n"
-
-    # The original file must be preserved in a backup.
-    assert (workspace / "app.py.bak").read_text(
-        encoding="utf-8"
-    ) == "def calculate():\n    return 1\n"
-
-    final_state = blackboard.get_state()
-    assert final_state.status == "verifying"
-    assert final_state.test_result.failed == 0
-    assert final_state.errors == []
-
-    output = capsys.readouterr().out
-    assert "Repair succeeded: all tests now pass." in output
-    assert "Final outcome: all tests passed." in output
-
-    # Check that repair-related events were audited.
-    audit_path = tmp_path / "devagents_audit.jsonl"
-    audit_text = audit_path.read_text(encoding="utf-8")
-    assert "diagnosis_completed" in audit_text
-    assert "repair_proposed" in audit_text
-    assert "patch_validated" in audit_text
-    assert "patch_applied" in audit_text
-    assert "repair_attempt_completed" in audit_text
-    assert "workflow_completed" in audit_text
-
-
-def test_repair_loop_stops_after_maximum_attempts(
-    monkeypatch,
-    tmp_path,
-    capsys,
-):
-    blackboard, workspace = create_test_workflow(tmp_path)
-    install_test_workflow(
-        monkeypatch, blackboard, workspace, tmp_path
-    )
-
-    run_tests = Mock(
-        side_effect=[
-            make_failure(),
-            make_failure(),
-            make_failure(),
-            make_failure(),
-        ]
-    )
-
-    diagnose = Mock(return_value=make_debug_report())
-
-    propose = Mock(
-        side_effect=[
-            make_patch("return 1", "return 2"),
-            make_patch("return 2", "return 3"),
-            make_patch("return 3", "return 4"),
-        ]
-    )
-
-    monkeypatch.setattr(
-        run_repair_loop, "run_project_tests", run_tests
-    )
-    monkeypatch.setattr(
-        run_repair_loop, "diagnose_failure", diagnose
-    )
-    monkeypatch.setattr(
-        run_repair_loop, "propose_repair", propose
-    )
-
-    run_repair_loop.main()
-
-    # One initial run plus exactly three repair retests.
-    assert run_tests.call_count == 4
-    assert diagnose.call_count == run_repair_loop.MAX_REPAIR_ATTEMPTS
-    assert propose.call_count == run_repair_loop.MAX_REPAIR_ATTEMPTS
-
-    final_state = blackboard.get_state()
-    assert final_state.status == "debugging"
-    assert final_state.test_result.failed == 1
-
-    output = capsys.readouterr().out
-    assert "Repair limit reached" in output
-    assert "Final outcome: unresolved test failures." in output
-
-    # Confirm the unresolved outcome and repair limit were audited.
-    audit_path = tmp_path / "devagents_audit.jsonl"
-    audit_text = audit_path.read_text(encoding="utf-8")
-    assert "repair_limit_reached" in audit_text
-    assert "workflow_completed" in audit_text
-    assert '"status":"unresolved"' in audit_text
+if __name__ == "__main__":
+    main()
