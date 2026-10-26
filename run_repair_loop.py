@@ -1,8 +1,8 @@
 
 import json
 from pathlib import Path
-from typing import Any
-from src.trace_context import TraceContext
+from typing import Any, Callable, TypeVar
+
 from src.audit_logger import AuditLogger
 from src.blackboard import Blackboard
 from src.debugging_agent import diagnose_failure
@@ -11,6 +11,7 @@ from src.patch_applier import apply_patch
 from src.patch_validator import validate_patch
 from src.repair_agent import propose_repair
 from src.testing_agent import run_project_tests
+from src.trace_context import TraceContext
 
 
 MAX_REPAIR_ATTEMPTS = 3
@@ -20,6 +21,8 @@ AUDIT_LOG_PATH = (
     / "logs"
     / "devagents_audit.jsonl"
 )
+
+T = TypeVar("T")
 
 
 def create_demo_workflow():
@@ -100,28 +103,43 @@ def _safe_audit_event(
     logger: AuditLogger,
     *,
     task_id: str,
+    trace_id: str,
     event_type: str,
     stage: str,
     status: str,
     details: dict[str, Any] | None = None,
 ) -> None:
-    """
-    Write an audit event without allowing a logging failure
-    to hide the workflow's original result or exception.
-    """
+    """Record a trace-linked audit event without masking workflow errors."""
+    event_details = dict(details or {})
+    event_details["trace_id"] = trace_id
+
     try:
         logger.log_event(
             task_id=task_id,
             event_type=event_type,
             stage=stage,
             status=status,
-            details=details or {},
+            details=event_details,
         )
     except Exception as audit_error:
         print(
             "WARNING: Audit logging failed:",
             f"{type(audit_error).__name__}: {audit_error}",
         )
+
+
+def _run_timed(
+    trace: TraceContext,
+    stage: str,
+    operation: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[T, float]:
+    """Run an operation and return its result and elapsed seconds."""
+    with trace.measure(stage) as timing:
+        result = operation(*args, **kwargs)
+
+    return result, float(timing["duration_seconds"])
 
 
 def main():
@@ -135,9 +153,12 @@ def main():
     attempts: list[dict[str, Any]] = []
     current_attempt = None
 
+    print(f"Workflow trace ID: {trace_id}")
+
     _safe_audit_event(
         logger,
         task_id=task_id,
+        trace_id=trace_id,
         event_type="workflow_started",
         stage="initialization",
         status="started",
@@ -153,17 +174,24 @@ def main():
         _safe_audit_event(
             logger,
             task_id=task_id,
+            trace_id=trace_id,
             event_type="test_run_started",
             stage="initial_testing",
             status="started",
         )
 
-        result = run_project_tests(workspace)
+        result, duration = _run_timed(
+            trace,
+            "initial_testing",
+            run_project_tests,
+            workspace,
+        )
         blackboard.record_test_result(result)
 
         _safe_audit_event(
             logger,
             task_id=task_id,
+            trace_id=trace_id,
             event_type="test_run_completed",
             stage="initial_testing",
             status="passed" if result.failed == 0 else "failed",
@@ -171,6 +199,7 @@ def main():
                 "passed": result.passed,
                 "failed": result.failed,
                 "summary": result.summary,
+                "duration_seconds": duration,
             },
         )
 
@@ -182,10 +211,14 @@ def main():
             _safe_audit_event(
                 logger,
                 task_id=task_id,
+                trace_id=trace_id,
                 event_type="workflow_completed",
                 stage="finalization",
                 status="success",
-                details={"repair_attempts": 0},
+                details={
+                    "repair_attempts": 0,
+                    "duration_seconds": None,
+                },
             )
 
         else:
@@ -203,11 +236,13 @@ def main():
 
                 current_attempt = {
                     "attempt": attempt_number,
+                    "trace_id": trace_id,
                     "stage": "diagnosis",
                     "status": "in_progress",
                     "patch": None,
                     "application": None,
                     "test_result": None,
+                    "timings": {},
                     "error": None,
                 }
                 attempts.append(current_attempt)
@@ -215,6 +250,7 @@ def main():
                 _safe_audit_event(
                     logger,
                     task_id=task_id,
+                    trace_id=trace_id,
                     event_type="repair_attempt_started",
                     stage="diagnosis",
                     status="started",
@@ -227,11 +263,15 @@ def main():
                 )
 
                 # Step 1: Diagnose the test failures.
-                report = diagnose_failure(
+                report, duration = _run_timed(
+                    trace,
+                    "debugging",
+                    diagnose_failure,
                     test_result=state.test_result,
                     code_files=state.code_files,
                     workspace=workspace,
                 )
+                current_attempt["timings"]["debugging_seconds"] = duration
 
                 if report is None:
                     raise RuntimeError(
@@ -246,6 +286,7 @@ def main():
                 _safe_audit_event(
                     logger,
                     task_id=task_id,
+                    trace_id=trace_id,
                     event_type="diagnosis_completed",
                     stage="debugging",
                     status="success",
@@ -254,6 +295,7 @@ def main():
                         "severity": report.severity,
                         "confidence": report.confidence,
                         "affected_files": report.affected_files,
+                        "duration_seconds": duration,
                     },
                 )
 
@@ -261,10 +303,16 @@ def main():
                 print(report.model_dump_json(indent=2))
 
                 # Step 2: Ask the Repair Agent for a patch.
-                patch = propose_repair(
+                patch, duration = _run_timed(
+                    trace,
+                    "repair_proposal",
+                    propose_repair,
                     debug_report=report,
                     workspace=workspace,
                     allowed_files=state.code_files,
+                )
+                current_attempt["timings"]["repair_proposal_seconds"] = (
+                    duration
                 )
 
                 current_attempt["patch"] = {
@@ -276,12 +324,14 @@ def main():
                 _safe_audit_event(
                     logger,
                     task_id=task_id,
+                    trace_id=trace_id,
                     event_type="repair_proposed",
                     stage="repair_proposal",
                     status="success",
                     details={
                         "attempt": attempt_number,
                         "file_path": patch.file_path,
+                        "duration_seconds": duration,
                     },
                 )
 
@@ -289,31 +339,45 @@ def main():
                 print(patch.model_dump_json(indent=2))
 
                 # Step 3: Validate immediately before application.
-                validate_patch(
+                _, duration = _run_timed(
+                    trace,
+                    "patch_validation",
+                    validate_patch,
                     patch=patch,
                     workspace=workspace,
                     allowed_files=state.code_files,
+                )
+                current_attempt["timings"]["patch_validation_seconds"] = (
+                    duration
                 )
 
                 _safe_audit_event(
                     logger,
                     task_id=task_id,
+                    trace_id=trace_id,
                     event_type="patch_validated",
                     stage="patch_validation",
                     status="success",
                     details={
                         "attempt": attempt_number,
                         "file_path": patch.file_path,
+                        "duration_seconds": duration,
                     },
                 )
 
                 current_attempt["stage"] = "patch_application"
 
                 # Step 4: Apply the patch and preserve a backup.
-                application_result = apply_patch(
+                application_result, duration = _run_timed(
+                    trace,
+                    "patch_application",
+                    apply_patch,
                     patch=patch,
                     workspace=workspace,
                     allowed_files=state.code_files,
+                )
+                current_attempt["timings"]["patch_application_seconds"] = (
+                    duration
                 )
 
                 current_attempt["application"] = application_result
@@ -322,6 +386,7 @@ def main():
                 _safe_audit_event(
                     logger,
                     task_id=task_id,
+                    trace_id=trace_id,
                     event_type="patch_applied",
                     stage="patch_application",
                     status="success",
@@ -331,6 +396,7 @@ def main():
                         "backup_path": application_result.get(
                             "backup_path"
                         ),
+                        "duration_seconds": duration,
                     },
                 )
 
@@ -340,20 +406,28 @@ def main():
                 _safe_audit_event(
                     logger,
                     task_id=task_id,
+                    trace_id=trace_id,
                     event_type="test_run_started",
                     stage="retesting",
                     status="started",
                     details={"attempt": attempt_number},
                 )
 
-                result = run_project_tests(workspace)
+                result, duration = _run_timed(
+                    trace,
+                    "retesting",
+                    run_project_tests,
+                    workspace,
+                )
                 blackboard.record_test_result(result)
 
                 current_attempt["test_result"] = result.model_dump()
+                current_attempt["timings"]["retesting_seconds"] = duration
 
                 _safe_audit_event(
                     logger,
                     task_id=task_id,
+                    trace_id=trace_id,
                     event_type="test_run_completed",
                     stage="retesting",
                     status="passed" if result.failed == 0 else "failed",
@@ -362,6 +436,7 @@ def main():
                         "passed": result.passed,
                         "failed": result.failed,
                         "summary": result.summary,
+                        "duration_seconds": duration,
                     },
                 )
 
@@ -375,10 +450,14 @@ def main():
                     _safe_audit_event(
                         logger,
                         task_id=task_id,
+                        trace_id=trace_id,
                         event_type="repair_attempt_completed",
                         stage="repair",
                         status="success",
-                        details={"attempt": attempt_number},
+                        details={
+                            "attempt": attempt_number,
+                            "timings": current_attempt["timings"],
+                        },
                     )
 
                     print("\nRepair succeeded: all tests now pass.")
@@ -391,12 +470,14 @@ def main():
                 _safe_audit_event(
                     logger,
                     task_id=task_id,
+                    trace_id=trace_id,
                     event_type="repair_attempt_completed",
                     stage="repair",
                     status="unsuccessful",
                     details={
                         "attempt": attempt_number,
                         "remaining_failures": result.failed,
+                        "timings": current_attempt["timings"],
                     },
                 )
 
@@ -416,6 +497,7 @@ def main():
                 _safe_audit_event(
                     logger,
                     task_id=task_id,
+                    trace_id=trace_id,
                     event_type="repair_limit_reached",
                     stage="repair",
                     status="unresolved",
@@ -437,6 +519,7 @@ def main():
             _safe_audit_event(
                 logger,
                 task_id=task_id,
+                trace_id=trace_id,
                 event_type="workflow_completed",
                 stage="finalization",
                 status=final_status,
@@ -480,6 +563,7 @@ def main():
         _safe_audit_event(
             logger,
             task_id=task_id,
+            trace_id=trace_id,
             event_type="workflow_error",
             stage=(
                 current_attempt["stage"]
