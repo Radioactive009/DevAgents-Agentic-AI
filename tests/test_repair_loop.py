@@ -347,7 +347,7 @@ def main() -> None:
                 status="success",
                 details={
                     "attempt": attempt_number,
-                    "path": patch.path,
+                    "path": patch.file_path,
                     "duration_seconds": proposal_duration,
                 },
             )
@@ -361,6 +361,7 @@ def main() -> None:
                 "patch_validation",
                 validate_patch,
                 patch,
+                workspace,
                 code_files,
             )
             current_attempt["timings"]["patch_validation"] = validation_duration
@@ -374,7 +375,7 @@ def main() -> None:
                 status="success",
                 details={
                     "attempt": attempt_number,
-                    "path": patch.path,
+                    "path": patch.file_path,
                     "duration_seconds": validation_duration,
                 },
             )
@@ -387,8 +388,8 @@ def main() -> None:
                 trace,
                 "patch_application",
                 apply_patch,
-                workspace,
                 patch,
+                workspace,
                 code_files,
             )
             current_attempt["timings"]["patch_application"] = application_duration
@@ -402,7 +403,7 @@ def main() -> None:
                 status="success",
                 details={
                     "attempt": attempt_number,
-                    "path": patch.path,
+                    "path": patch.file_path,
                     "duration_seconds": application_duration,
                 },
             )
