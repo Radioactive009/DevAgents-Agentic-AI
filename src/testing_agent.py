@@ -51,12 +51,18 @@ def run_project_tests(
             "No test_*.py files were found in the project's tests directory."
         )
 
+    import os
+    env = dict(os.environ)
+    curr_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{workspace};{curr_pp}" if curr_pp else str(workspace)
+
     command = [
         sys.executable,
         "-m",
         "pytest",
         "-v",
         "--tb=short",
+        "--import-mode=importlib",
         str(test_directory),
     ]
 
@@ -64,6 +70,7 @@ def run_project_tests(
         completed = subprocess.run(
             command,
             cwd=str(workspace),
+            env=env,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,

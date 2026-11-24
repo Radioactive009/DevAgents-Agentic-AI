@@ -701,12 +701,36 @@ def main():
             with st.status("🧪 **Stage 5: Pytest Sandbox Verification**", expanded=False) as s5:
                 test_res = run_project_tests(workspace)
                 blackboard.record_test_result(test_res)
-                s5.update(label=f"✅ Stage 5: Pytest Passed ({test_res.passed} passed, 0 failed)", state="complete")
+                if test_res.failed == 0:
+                    s5.update(label=f"✅ Stage 5: Pytest Passed ({test_res.passed} passed, 0 failed)", state="complete")
+                else:
+                    s5.update(label=f"⚠️ Stage 5: Pytest Identified Failures ({test_res.passed} passed, {test_res.failed} failed)", state="complete")
+
+            # Step 6: Evaluator-Optimizer Self-Repair Loop (Triggered if any tests fail)
+            if test_res.failed > 0:
+                with st.status("🔧 **Stage 6: Self-Correction Repair Loop**", expanded=True) as s6:
+                    st.write(f"Detected {test_res.failed} failing tests. Diagnosing root cause with Debugger Agent...")
+                    try:
+                        report = diagnose_failure(test_res, written_files, workspace)
+                        st.write(f"🔍 Root Cause: `{report.root_cause[:120]}...`")
+                        patch = propose_repair(report, written_files, workspace)
+                        st.write(f"🛠️ Proposing atomic patch for: `{patch.file_path}`")
+                        apply_patch(patch, workspace, written_files)
+                        retest_res = run_project_tests(workspace)
+                        blackboard.record_test_result(retest_res)
+                        test_res = retest_res
+                        if test_res.failed == 0:
+                            s6.update(label=f"✅ Stage 6: Self-Repair Succeeded! ({test_res.passed} passed)", state="complete")
+                            st.success(f"✓ All tests now pass after autonomous patch application!")
+                        else:
+                            s6.update(label=f"⚠️ Stage 6: Self-Repair Attempt Complete ({test_res.passed} passed, {test_res.failed} failed)", state="complete")
+                    except Exception as e:
+                        s6.update(label=f"⚠️ Stage 6: Repair notice ({e})", state="complete")
 
             # Display Test Metric Badge
             mcol1, mcol2, mcol3 = st.columns(3)
             with mcol1:
-                st.metric("Pytest Health", f"{test_res.passed} Passed", "0 Failed")
+                st.metric("Pytest Health", f"{test_res.passed} Passed", f"{test_res.failed} Failed")
             with mcol2:
                 st.metric("Files Generated", len(written_files))
             with mcol3:
@@ -721,9 +745,14 @@ def main():
                     if fp.exists():
                         st.code(fp.read_text(encoding="utf-8"), language="python")
 
-            with st.expander("📊 View Pytest Test Summary", expanded=False):
+            with st.expander("📊 View Pytest Test Summary & Execution Details", expanded=False):
                 st.info(f"Summary: {test_res.summary}")
-                st.success("All test assertions passed in isolated subprocess sandbox.")
+                if test_res.error_details:
+                    st.write("**Details:**")
+                    for err in test_res.error_details:
+                        st.code(err, language="text")
+                else:
+                    st.success("All test assertions passed in isolated subprocess sandbox.")
 
         # ----------------------------------------------------------------------
         # RIGHT COLUMN: Live Interactive Visual UI (Browser Mockup Preview)
