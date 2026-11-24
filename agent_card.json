@@ -1,0 +1,52 @@
+{
+  "name": "devagents_agi_orchestrator",
+  "description": "DevAgents-AGI Multi-Agent Orchestrator coordinating dual-framework agents (Google ADK and CrewAI) over the A2A protocol for autonomous software engineering.",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text"
+  ],
+  "defaultOutputModes": [
+    "text"
+  ],
+  "skills": [
+    {
+      "id": "multi_agent_orchestration",
+      "name": "Multi-Agent Orchestration",
+      "description": "Coordinates dual-agent planning and code generation over A2A JSON-RPC transport.",
+      "tags": [
+        "orchestration",
+        "multi-agent",
+        "a2a",
+        "coordination"
+      ]
+    },
+    {
+      "id": "software_architecture_design",
+      "name": "Software Architecture Design",
+      "description": "Analyzes requirements and designs technical plans via Google ADK.",
+      "tags": [
+        "architecture",
+        "adk"
+      ]
+    },
+    {
+      "id": "code_generation",
+      "name": "Code Generation",
+      "description": "Implements modules and test suites via CrewAI.",
+      "tags": [
+        "coding",
+        "crewai"
+      ]
+    }
+  ]
+}

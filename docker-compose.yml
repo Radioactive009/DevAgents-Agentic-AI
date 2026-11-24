@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  devagents-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: devagents_agi
+    ports:
+      - "8501:8501"  # Streamlit Interactive Builder
+      - "8080:8080"  # Observability & Architecture Dashboard
+    environment:
+      - PORT=8501
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    volumes:
+      - ./logs:/app/logs
+      - ./generated_projects:/app/generated_projects
+    restart: unless-stopped

@@ -1,0 +1,4 @@
+pattern_name,total_runs,mean_latency_s,p50_latency_s,p95_latency_s,total_prompt_tokens,total_completion_tokens,total_tokens,total_cost_usd,cost_per_1k_requests,error_recovery_success_rate,mean_recovery_attempts,mttr_seconds,context_token_bloat_factor,state_safety_score,race_resistance_rate,concurrency_safe
+Blackboard + Evaluator-Optimizer,10,0.8234,0.7653,1.0676,7885,3906,11791,0.02193200,2.1932,100.00%,1.2,0.3572,1.0,10.0,100.0%,True
+ReAct,10,1.1909,1.1361,1.4693,32760,5979,38739,0.05012400,5.0124,100.00%,1.3,0.4649,1.93,4.5,0.0%,False
+Hierarchical,10,1.3143,1.1046,1.7495,15001,8789,23790,0.04715680,4.7157,90.00%,1.56,0.4918,1.3,8.0,100.0%,True
