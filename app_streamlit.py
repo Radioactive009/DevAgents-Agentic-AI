@@ -23,6 +23,13 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+# Populate environment variables from Streamlit Cloud Secrets if available
+try:
+    if "GROQ_API_KEY" in st.secrets:
+        os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+except Exception:
+    pass
+
 from src.models import ProjectRequest, ArchitecturePlan, ProjectState
 from src.security.prompt_guard import PromptGuard
 from src.blackboard import Blackboard
