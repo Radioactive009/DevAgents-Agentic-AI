@@ -321,8 +321,14 @@ def execute_pipeline(
                 else:
                     st.warning(f"File {file_name} not found.")
 
-        with st.expander("📊 View Pytest Terminal Log Output", expanded=False):
-            st.code(test_res.raw_output, language="bash")
+        with st.expander("📊 View Pytest Test Summary & Execution Details", expanded=False):
+            st.info(f"**Pytest Execution Summary:** {test_res.summary}")
+            if test_res.error_details:
+                st.write("**Failure Details:**")
+                for err in test_res.error_details:
+                    st.code(err, language="text")
+            else:
+                st.success(f"✓ All {test_res.passed} test cases passed cleanly in isolated subprocess sandbox with 0 errors.")
 
         with st.expander("🔒 Cryptographic Audit Provenance", expanded=False):
             st.write(f"**Task ID:** `{task_id}`")
