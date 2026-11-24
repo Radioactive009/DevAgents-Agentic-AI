@@ -27,12 +27,15 @@ class Blackboard:
         plan: ArchitecturePlan,
     ) -> ProjectState:
         with self._lock:
-            if plan.project_name != self._state.request.project_name:
+            # Case-insensitive comparison allows for LLM title normalization
+            if plan.project_name.strip().lower() != self._state.request.project_name.strip().lower():
                 raise ValueError(
                     "Architecture plan project name does not match "
                     "the project request."
                 )
 
+            # Harmonize canonical project name
+            plan.project_name = self._state.request.project_name
             self._state.architecture_plan = plan
             self._state.status = "coding"
 

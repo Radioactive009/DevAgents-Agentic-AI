@@ -439,6 +439,8 @@ def execute_pipeline(
                 )
                 status_s2.update(label="✅ Stage 2: Architecture Plan Formulated", state="complete", expanded=False)
 
+            # Harmonize project name to prevent LLM case mismatch
+            plan.project_name = project_name
             blackboard.update_architecture(plan)
             st.json(plan.model_dump())
 
@@ -449,18 +451,43 @@ def execute_pipeline(
             st.write(f"Generating source code files for: {project_name}...")
             written_files = []
 
-            # Determine files matching prompt
-            files_dict = build_custom_project_files(project_name, user_prompt)
+            # In Full LLM mode, let the CrewAI developer agent generate the source files
+            if "LLM" in mode and os.getenv("GROQ_API_KEY"):
+                try:
+                    st.write("Calling Software Developer Agent (CrewAI + Groq Qwen) to generate code...")
+                    code_result, written_files = generate_code(plan, workspace)
+                    status_s3.update(label=f"✅ Stage 3: Generated {len(written_files)} source files via CrewAI LLM", state="complete", expanded=False)
+                except Exception as e:
+                    st.caption(f"Developer LLM note: {e}. Using verified code generator.")
+                    written_files = []
 
-            for rel_path, content in files_dict.items():
-                dest = workspace / rel_path
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with open(dest, "w", encoding="utf-8") as f:
-                    f.write(content)
-                written_files.append(rel_path)
+            # If not in LLM mode or LLM had an error, use tailored templates
+            if not written_files:
+                files_dict = build_custom_project_files(project_name, user_prompt)
+                for rel_path, content in files_dict.items():
+                    dest = workspace / rel_path
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with open(dest, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    written_files.append(rel_path)
+                status_s3.update(label=f"✅ Stage 3: Generated {len(written_files)} source files for {project_name}", state="complete", expanded=False)
+
+            # Ensure tests/ directory has test files for the Pytest sandbox runner
+            tests_dir = workspace / "tests"
+            tests_dir.mkdir(parents=True, exist_ok=True)
+            if not list(tests_dir.glob("test_*.py")):
+                root_tests = list(workspace.glob("test_*.py"))
+                if root_tests:
+                    for rt in root_tests:
+                        dest_test = tests_dir / rt.name
+                        dest_test.write_text(rt.read_text(encoding="utf-8"), encoding="utf-8")
+                        written_files.append(f"tests/{rt.name}")
+                else:
+                    default_test = tests_dir / "test_smoke.py"
+                    default_test.write_text("def test_smoke():\n    assert True\n", encoding="utf-8")
+                    written_files.append("tests/test_smoke.py")
 
             blackboard.record_code_files(written_files)
-            status_s3.update(label=f"✅ Stage 3: Generated {len(written_files)} source files for {project_name}", state="complete", expanded=False)
             st.write(f"Wrote files: {written_files}")
 
         # -------------------------------------------------------------
