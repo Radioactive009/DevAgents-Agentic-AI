@@ -19,6 +19,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import streamlit as st
+
+# Page Configuration MUST be the very first Streamlit command
+st.set_page_config(
+    page_title="DevAgents AGI - Split-Screen Agentic IDE",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
@@ -45,14 +54,6 @@ from src.patch_applier import apply_patch
 from src.patch_validator import validate_patch
 from src.architecture_agent import generate_architecture
 from src.coding_agent import generate_code
-
-# Page Configuration
-st.set_page_config(
-    page_title="DevAgents AGI - Split-Screen Agentic IDE",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
 
 # Custom Styling (Blackbox AI inspired dark theme with clean split pane)
 st.markdown("""
@@ -812,4 +813,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        st.error(f"Application Initialization Notice: {e}")
+        st.exception(e)
